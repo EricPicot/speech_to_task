@@ -2,17 +2,19 @@ import os
 import json
 import re
 from datetime import datetime, timedelta
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 from langchain_openai import ChatOpenAI
 from langchain.prompts import ChatPromptTemplate
 from langchain.output_parsers import PydanticOutputParser
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from dotenv import load_dotenv
 
 load_dotenv()
 
 class Task(BaseModel):
     """Modèle pour représenter une tâche extraite du texte."""
+    model_config = ConfigDict(extra='ignore')  # Ignorer les champs supplémentaires pour plus de flexibilité
+    
     description: str = Field(description="Description détaillée de la tâche réalisée")
     project: str = Field(description="Projet associé à la tâche")
     duration_minutes: int = Field(description="Durée de la tâche en minutes")
