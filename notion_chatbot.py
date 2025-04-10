@@ -1,7 +1,7 @@
 import gradio as gr
 import asyncio
 import logging
-from notion_agent import create_notion_agent, process_message
+from src.notion_agent import create_notion_agent, process_message
 
 # Configure basic logging
 logging.basicConfig(level=logging.INFO)
