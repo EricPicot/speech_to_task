@@ -6,8 +6,10 @@ import numpy as np
 import speech_recognition as sr
 import time
 import sys
-from task_extractor import TaskExtractor
+from langchain_openai import ChatOpenAI
+from notion_integration import NotionIntegration
 from task_agent_extractor import TaskAgentExtractor
+import asyncio
 
 # Contrôle du niveau de verbosité des logs
 DEBUG_MODE = False
@@ -50,18 +52,27 @@ log_capture = LogCapture()
 os.makedirs('audio_input', exist_ok=True)
 os.makedirs('transcripts', exist_ok=True)
 
-# Initialiser l'extracteur de tâches avec les projets adaptés à vos besoins réels
-PROJECTS = ["Site Web", "Application Mobile", "Base de données", "Marketing", 
-           "Documentation", "Support Client", "Développement", "Réunion", "Formation", 
-           "Formation personnelle", "Mon marché recommandation"]
+# Initialize LLM with OpenRouter
+llm = ChatOpenAI(
+    temperature=0,
+    model=os.getenv("OPENROUTER_MODEL"),
+    openai_api_key=os.getenv("OPENROUTER_API_KEY"),
+    openai_api_base="https://openrouter.ai/api/v1",
+    default_headers={
+        "HTTP-Referer": "http://localhost:8000",
+        "X-Title": "Notion MCP Agent"
+    }
+)
 
-# Créer les deux types d'extracteurs
-task_extractor = TaskExtractor(projects=PROJECTS)
-task_agent_extractor = TaskAgentExtractor(projects=PROJECTS)
+# Initialize Notion integration
+notion = NotionIntegration()
 
-def process_audio(audio_data, use_agent=False, enable_debug=False):
+# Create task agent extractor
+task_agent_extractor = TaskAgentExtractor(llm=llm, notion=notion)
+
+async def process_audio(audio_data, uploaded_file=None, enable_debug=False):
     """
-    Traite l'audio enregistré :
+    Traite l'audio enregistré ou uploadé :
     1. Sauvegarde le fichier WAV
     2. Transcrit l'audio
     3. Sauvegarde la transcription
@@ -69,7 +80,7 @@ def process_audio(audio_data, use_agent=False, enable_debug=False):
     
     Args:
         audio_data: Données audio enregistrées
-        use_agent: Booléen indiquant s'il faut utiliser l'agent LangGraph
+        uploaded_file: Fichier audio uploadé
         enable_debug: Activer les logs détaillés
         
     Retourne un résumé des opérations.
@@ -82,8 +93,9 @@ def process_audio(audio_data, use_agent=False, enable_debug=False):
         log_capture.clear()
         log_capture.start()
     
-    if audio_data is None:
-        return "❌ Aucun audio enregistré"
+    if audio_data is None and uploaded_file is None:
+        yield "❌ Aucun audio fourni"
+        return
 
     try:
         # Afficher un message de démarrage
@@ -94,8 +106,6 @@ def process_audio(audio_data, use_agent=False, enable_debug=False):
         status += "⏳ Sauvegarde de l'audio...\n"
         yield status
         
-        sample_rate, audio_array = audio_data
-        
         # Créer un timestamp unique pour lier l'audio et la transcription
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
@@ -103,13 +113,23 @@ def process_audio(audio_data, use_agent=False, enable_debug=False):
         filename = f"recording_{timestamp}.wav"
         audio_filepath = os.path.join("audio_input", filename)
         
-        # Assurer que l'audio est au format 16 bits pour WAV
-        if audio_array.dtype != np.int16:
-            audio_array = (audio_array * 32767).astype(np.int16)
+        if uploaded_file is not None:
+            # Si un fichier est uploadé, le copier directement
+            import shutil
+            shutil.copy2(uploaded_file, audio_filepath)
+            status += f"✅ Fichier audio uploadé sauvegardé: {audio_filepath}\n\n"
+        else:
+            # Sinon, traiter l'audio enregistré
+            sample_rate, audio_array = audio_data
             
-        # Sauvegarder l'audio
-        write_wav(audio_filepath, sample_rate, audio_array)
-        status += f"✅ Audio sauvegardé: {audio_filepath}\n\n"
+            # Assurer que l'audio est au format 16 bits pour WAV
+            if audio_array.dtype != np.int16:
+                audio_array = (audio_array * 32767).astype(np.int16)
+                
+            # Sauvegarder l'audio
+            write_wav(audio_filepath, sample_rate, audio_array)
+            status += f"✅ Audio enregistré sauvegardé: {audio_filepath}\n\n"
+        
         yield status
         
         # 2. Transcrire l'audio
@@ -144,64 +164,45 @@ def process_audio(audio_data, use_agent=False, enable_debug=False):
             # 4. Extraire les tâches si du texte a été transcrit
             if transcript_text:
                 try:
-                    # Choisir l'extracteur en fonction du paramètre use_agent
-                    if use_agent:
                         # Utiliser l'agent LangGraph
-                        status += "⏳ Extraction des tâches avec l'agent LangGraph (parallélisé)...\n"
-                        yield status
-                        
-                        try:
-                            start_time = time.time()
-                            status += "⏳ Initialisation du graphe LangGraph...\n"
-                            yield status
-                            
-                            tasks = task_agent_extractor.extract_tasks(transcript_text)
-                            end_time = time.time()
-                            
-                            status += f"✅ Traitement terminé en {end_time - start_time:.2f} secondes\n"
-                            yield status
-                            
-                            if tasks:
-                                status += f"✅ Extraction réussie! {len(tasks)} tâches trouvées.\n\n"
-                                yield status
-                                
-                                tasks_summary = task_agent_extractor.format_tasks_summary(tasks)
-                                status += f"Nombre de tâches extraites: {len(tasks)}\n\n"
-                                yield status  # Yield status before adding task summary
-                                
-                                # Add task summary and yield again to ensure it's displayed
-                                status += tasks_summary
-                                yield status
-                            else:
-                                status += "⚠️ Aucune tâche n'a pu être extraite de cette transcription par l'agent.\n\n"
-                                yield status
-                        except Exception as extract_error:
-                            status += f"❌ Erreur spécifique lors de l'extraction des tâches avec l'agent LangGraph: {str(extract_error)}\n"
-                            import traceback
-                            error_traceback = traceback.format_exc()
-                            status += f"Détails de l'erreur:\n{error_traceback}\n\n"
-                            yield status
-                    else:
-                        # Utiliser l'extracteur simple
-                        status += "⏳ Extraction des tâches avec l'extracteur simple...\n"
-                        yield status
-                        
+                    status += "⏳ Extraction des tâches avec l'agent LangGraph (parallélisé)...\n"
+                    yield status
+                    
+                    try:
                         start_time = time.time()
-                        tasks = task_extractor.extract_tasks(transcript_text)
+                        status += "⏳ Initialisation du graphe LangGraph...\n"
+                        yield status
+                        
+                        # Initialize Notion and sync projects
+                        await notion.__aenter__()
+                        tasks = await task_agent_extractor.extract_tasks(transcript_text, create_timesheet_entries=True)
+                        await notion.__aexit__(None, None, None)
+                        
                         end_time = time.time()
                         
+                        status += f"✅ Traitement terminé en {end_time - start_time:.2f} secondes\n"
+                        yield status
+                        
                         if tasks:
-                            status += f"✅ Extraction réussie en {end_time - start_time:.2f} secondes\n\n"
-                            tasks_summary = task_extractor.format_tasks_summary(tasks)
-                            status += f"Nombre de tâches extraites: {len(tasks)}\n\n"
-                            yield status  # Yield status before adding task summary
+                            status += f"✅ Extraction réussie! {len(tasks)} tâches trouvées.\n\n"
+                            yield status
                             
-                            # Add task summary and yield again to ensure it's displayed
-                            status += tasks_summary
+                            tasks_summary = await task_agent_extractor.format_tasks_summary(tasks)
+                            status += f"Nombre de tâches extraites: {len(tasks)}\n\n"
                             yield status
+                            
+                            # Export to Notion
+                        
                         else:
-                            status += "⚠️ Aucune tâche n'a pu être extraite de cette transcription.\n\n"
+                            status += "⚠️ Aucune tâche n'a pu être extraite de cette transcription par l'agent.\n\n"
                             yield status
+                    except Exception as extract_error:
+                        status += f"❌ Erreur spécifique lors de l'extraction des tâches avec l'agent LangGraph: {str(extract_error)}\n"
+                        import traceback
+                        error_traceback = traceback.format_exc()
+                        status += f"Détails de l'erreur:\n{error_traceback}\n\n"
+                        yield status
+                    
                 except Exception as e:
                     status += f"❌ Erreur lors de l'extraction des tâches: {str(e)}\n\n"
                     import traceback
@@ -210,7 +211,7 @@ def process_audio(audio_data, use_agent=False, enable_debug=False):
                     yield status
             
             # Retourner un résumé complet
-            extraction_method = "agent LangGraph" if use_agent else "extracteur simple"
+            extraction_method = "agent LangGraph" 
             final_status = f"""✅ Traitement audio terminé:
 • Audio: {audio_filepath}
 • Transcription: {transcript_filepath}
@@ -229,12 +230,14 @@ def process_audio(audio_data, use_agent=False, enable_debug=False):
             
             # Yield one more time before returning the final result
             yield final_status
-            return final_status
+            return
             
         except sr.UnknownValueError:
-            return f"❌ Impossible de comprendre l'audio\nAudio sauvegardé: {audio_filepath}"
+            yield f"❌ Impossible de comprendre l'audio\nAudio sauvegardé: {audio_filepath}"
+            return
         except sr.RequestError as e:
-            return f"❌ Erreur de service: {str(e)}\nAudio sauvegardé: {audio_filepath}"
+            yield f"❌ Erreur de service: {str(e)}\nAudio sauvegardé: {audio_filepath}"
+            return
             
     except Exception as e:
         if DEBUG_MODE:
@@ -248,15 +251,15 @@ def process_audio(audio_data, use_agent=False, enable_debug=False):
             detailed_msg += "\n\n--- Logs de débogage ---\n"
             detailed_msg += log_capture.get_logs()
             
-        return detailed_msg
+        yield detailed_msg
+        return
 
-def analyze_transcript(transcript_text, use_agent=False, enable_debug=False):
+async def analyze_transcript(transcript_text, enable_debug=False):
     """
     Analyse une transcription existante pour extraire les tâches.
     
     Args:
         transcript_text: Texte de la transcription à analyser
-        use_agent: Booléen indiquant s'il faut utiliser l'agent LangGraph
         enable_debug: Activer les logs détaillés
         
     Returns:
@@ -271,69 +274,55 @@ def analyze_transcript(transcript_text, use_agent=False, enable_debug=False):
         log_capture.start()
         
     if not transcript_text:
-        return "❌ Aucun texte à analyser"
+        yield "❌ Aucun texte à analyser"
+        return
     
     # Initialiser le statut avec la transcription pour l'afficher immédiatement
     status = f"📝 Texte à analyser:\n{transcript_text}\n\n"
     yield status
     
     try:
-        # Choisir l'extracteur en fonction du paramètre use_agent
-        if use_agent:
-            # Utiliser l'agent LangGraph
-            status += "⏳ Extraction des tâches avec l'agent LangGraph (parallélisé)...\n"
-            yield status
-            
-            try:
-                start_time = time.time()
-                status += "⏳ Initialisation du graphe LangGraph...\n"
-                yield status
-                
-                tasks = task_agent_extractor.extract_tasks(transcript_text)
-                end_time = time.time()
-                
-                status += f"✅ Traitement terminé en {end_time - start_time:.2f} secondes\n"
-                yield status
-                
-                if tasks:
-                    status += f"✅ Extraction réussie! {len(tasks)} tâches trouvées.\n\n"
-                    yield status
-                    
-                    tasks_summary = task_agent_extractor.format_tasks_summary(tasks)
-                    status += tasks_summary
-                    yield status
-                else:
-                    status += "⚠️ Aucune tâche n'a pu être extraite de cette transcription par l'agent."
-                    yield status
-            except Exception as extract_error:
-                status += f"❌ Erreur spécifique lors de l'extraction des tâches avec l'agent LangGraph: {str(extract_error)}\n"
-                import traceback
-                error_traceback = traceback.format_exc()
-                status += f"Détails de l'erreur:\n{error_traceback}\n\n"
-                yield status
-        else:
-            # Utiliser l'extracteur simple
-            status += "⏳ Extraction des tâches avec l'extracteur simple...\n"
-            yield status
-            
+        # Utiliser l'agent LangGraph
+        status += "⏳ Extraction des tâches avec l'agent LangGraph (parallélisé)...\n"
+        yield status
+        
+        try:
             start_time = time.time()
-            tasks = task_extractor.extract_tasks(transcript_text)
+            status += "⏳ Initialisation du graphe LangGraph...\n"
+            yield status
+            
+            # Initialize Notion and sync projects
+            await notion.__aenter__()
+            tasks = await task_agent_extractor.extract_tasks(transcript_text, create_timesheet_entries=True)
+            await notion.__aexit__(None, None, None)
+            
             end_time = time.time()
             
-            if tasks:
-                status += f"✅ Extraction réussie en {end_time - start_time:.2f} secondes\n\n"
-                tasks_summary = task_extractor.format_tasks_summary(tasks)
-                status += tasks_summary
-            else:
-                status += "⚠️ Aucune tâche n'a pu être extraite de cette transcription."
-                
-        # Ajouter les logs détaillés si le mode debug est activé
-        if DEBUG_MODE:
-            log_capture.stop()
-            status += "\n\n--- Logs de débogage ---\n"
-            status += log_capture.get_logs()
+            status += f"✅ Traitement terminé en {end_time - start_time:.2f} secondes\n"
+            yield status
             
-        return status
+            if tasks:
+                status += f"✅ Extraction réussie! {len(tasks)} tâches trouvées.\n\n"
+                yield status
+                
+                tasks_summary = await task_agent_extractor.format_tasks_summary(tasks)
+                
+            
+                yield status
+                
+                status += tasks_summary
+                yield status
+            else:
+                status += "⚠️ Aucune tâche n'a pu être extraite de cette transcription par l'agent."
+                yield status
+        except Exception as extract_error:
+            status += f"❌ Erreur spécifique lors de l'extraction des tâches avec l'agent LangGraph: {str(extract_error)}\n"
+            import traceback
+            error_traceback = traceback.format_exc()
+            status += f"Détails de l'erreur:\n{error_traceback}\n\n"
+            yield status
+        
+        return
         
     except Exception as e:
         if DEBUG_MODE:
@@ -349,7 +338,14 @@ def analyze_transcript(transcript_text, use_agent=False, enable_debug=False):
             status += log_capture.get_logs()
             
         yield status
-        return status
+        return
+
+# Helper function to handle async generators
+async def run_async_generator(gen):
+    result = ""
+    async for item in gen:
+        result = item  # Keep the last yielded value
+    return result
 
 # Interface Gradio
 def create_interface():
@@ -373,18 +369,21 @@ def create_interface():
         
         with gr.Tab("Enregistrement Audio"):
             with gr.Row():
-                use_agent_audio = gr.Checkbox(
-                    label="Utiliser l'agent LangGraph (plus robuste, avec heures de début/fin)", 
-                    value=True,
-                    info="Recommandé pour une meilleure précision, mais peut prendre plus de temps"
-                )
-            
-            audio_input = gr.Audio(
-                sources=["microphone"], 
-                type="numpy", 
-                label="🎧 Audio",
-                elem_id="audio_input"
-            )
+                with gr.Column():
+                    gr.Markdown("### 🎤 Enregistrement Microphone")
+                    audio_input = gr.Audio(
+                        sources=["microphone"], 
+                        type="numpy", 
+                        label="🎧 Audio",
+                        elem_id="audio_input"
+                    )
+                with gr.Column():
+                    gr.Markdown("### 📁 Upload de Fichier")
+                    file_input = gr.File(
+                        label="Fichier audio (.wav)",
+                        file_types=[".wav"],
+                        type="filepath"
+                    )
             
             result = gr.Textbox(
                 label="Résultats", 
@@ -397,9 +396,16 @@ def create_interface():
             refresh_btn = gr.Button("Rafraîchir l'affichage")
             
             # Appeler process_audio automatiquement dès qu'un nouvel enregistrement est effectué
-            process_event = audio_input.change(
-                fn=process_audio, 
-                inputs=[audio_input, use_agent_audio, debug_checkbox], 
+            audio_input.change(
+                fn=lambda audio, debug: asyncio.run(run_async_generator(process_audio(audio, None, debug))), 
+                inputs=[audio_input, debug_checkbox], 
+                outputs=result
+            )
+            
+            # Appeler process_audio quand un fichier est uploadé
+            file_input.change(
+                fn=lambda file, debug: asyncio.run(run_async_generator(process_audio(None, file, debug))), 
+                inputs=[file_input, debug_checkbox], 
                 outputs=result
             )
             
@@ -414,12 +420,7 @@ def create_interface():
             )
         
         with gr.Tab("Analyse de Texte"):
-            with gr.Row():
-                use_agent_text = gr.Checkbox(
-                    label="Utiliser l'agent LangGraph (plus robuste, avec heures de début/fin)", 
-                    value=True,
-                    info="Recommandé pour une meilleure précision, mais peut prendre plus de temps"
-                )
+                
                 
             text_input = gr.Textbox(
                 label="Texte à analyser", 
@@ -435,8 +436,8 @@ def create_interface():
             )
             
             analyze_btn.click(
-                fn=analyze_transcript, 
-                inputs=[text_input, use_agent_text, debug_checkbox], 
+                fn=lambda *args: asyncio.run(run_async_generator(analyze_transcript(*args))), 
+                inputs=[text_input, debug_checkbox], 
                 outputs=text_result
             )
             

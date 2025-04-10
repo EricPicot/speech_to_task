@@ -253,9 +253,17 @@ class TaskAgentExtractor:
             for task in all_tasks:
                 try:
                     # Check required fields
-                    if not all(key in task for key in ["title", "project", "start_time", "end_time", "date"]):
-                        logger.warning(f"Task ignored - missing fields: {task}")
+                    if not all(key in task for key in ["title", "project", "date"]):
+                        logger.warning(f"Task ignored - missing required fields: {task}")
                         continue
+                    
+                    # Set default values for missing time fields
+                    if "start_time" not in task:
+                        task["start_time"] = "09:00"  # Default start time
+                        logger.warning(f"Missing start_time for task, using default: {task}")
+                    if "end_time" not in task:
+                        task["end_time"] = "17:00"  # Default end time
+                        logger.warning(f"Missing end_time for task, using default: {task}")
                     
                     # Récupérer l'ID du projet
                     project_name = task["project"]
@@ -315,6 +323,7 @@ class TaskAgentExtractor:
             
             # Create projects dictionary for efficient lookup
             projects_dict = {p.name: p.id for p in projects}
+            logger.info(f"Available projects: {list(projects_dict.keys())}")
             
             # Initialize state with projects information
             initial_state = {
@@ -333,6 +342,21 @@ class TaskAgentExtractor:
             # Get extracted tasks
             tasks = result.get("final_tasks", [])
             logger.info(f"Extracted {len(tasks)} tasks")
+            
+            # Map project names to IDs
+            for task in tasks:
+                if task.project_name in projects_dict:
+                    task.project_id = projects_dict[task.project_name]
+                    logger.info(f"Mapped project '{task.project_name}' to ID: {task.project_id}")
+                else:
+                    logger.warning(f"Could not find project ID for project name: {task.project_name}")
+                    # Try to find a similar project name
+                    for project_name, project_id in projects_dict.items():
+                        if task.project_name.lower() in project_name.lower() or project_name.lower() in task.project_name.lower():
+                            task.project_id = project_id
+                            logger.info(f"Mapped similar project '{task.project_name}' to '{project_name}' (ID: {project_id})")
+                            break
+            
             # Create timesheet entries if requested
             if tasks and create_timesheet_entries:
                 logger.info(f"Creating {len(tasks)} timesheet entries in Notion")
@@ -388,7 +412,9 @@ class TaskAgentExtractor:
             summary += f"Tâche {i}:\n"
             summary += f"📝 Titre: {task.title}\n"
             summary += f"🏢 Projet: {task.project_name}\n"
+            summary += f"🏢 Projet ID: {task.project_id}\n"
             summary += f"⏰ Période: {task.start_time} - {task.end_time} ({task.duration_minutes} minutes)\n"
+            summary += f"🗓️ Date: {task.date}\n"
             
             summary += "🔍 Actions:\n"
             for action in task.actions:
@@ -432,8 +458,8 @@ async def main():
     try:
         # Initialize LLM with OpenRouter
         llm = ChatOpenAI(
-            temperature=0,
-            model="google/gemini-2.0-flash-001",
+            temperature=0.2,
+            model=os.getenv("OPENROUTER_MODEL"),
             openai_api_key=os.getenv("OPENROUTER_API_KEY"),
             openai_api_base="https://openrouter.ai/api/v1",
             default_headers={

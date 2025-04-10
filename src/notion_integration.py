@@ -169,6 +169,9 @@ class NotionIntegration:
             The ID of the created page if successful, None otherwise
         """
         try:
+            # Format date from YYYYMMDD to YYYY-MM-DD
+            formatted_date = f"{task.date[:4]}-{task.date[4:6]}-{task.date[6:]}"
+            
             # Format task properties according to Notion schema
             properties = {
                 "Name": {
@@ -180,21 +183,14 @@ class NotionIntegration:
                         }
                     ]
                 },
-                "Project": {
-                    "relation": [
-                        {
-                            "id": task.project_id
-                        }
-                    ]
-                },
                 "Start time": {
                     "date": {
-                        "start": f"{task.date}T{task.start_time}:00"
+                        "start": f"{formatted_date}T{task.start_time}:00"
                     }
                 },
                 "End time": {
                     "date": {
-                        "start": f"{task.date}T{task.end_time}:00"
+                        "start": f"{formatted_date}T{task.end_time}:00"
                     }
                 }
             }
@@ -211,10 +207,13 @@ class NotionIntegration:
                                 }
                             ]
                         }
+                        logger.info(f"Added project relation for project ID: {task.project_id}")
                     else:
                         logger.warning(f"Invalid project_id format: {task.project_id}")
                 except Exception as e:
                     logger.warning(f"Error validating project_id: {str(e)}")
+            else:
+                logger.warning(f"No valid project_id for task: {task.title} (project: {task.project_name})")
             
             # Create the page in the timesheet database
             response = await self.create_database_item_tool.ainvoke({
@@ -273,6 +272,7 @@ class NotionIntegration:
                 if not block_response:
                     logger.warning("Failed to append description block, but page was created")
                 
+                logger.info(f"Successfully created timesheet entry for task: {task.title}")
                 return page_id
                 
             except Exception as e:
@@ -297,7 +297,15 @@ class NotionIntegration:
             Liste des IDs des pages créées
         """
         created_ids = []
-        for task in tasks:
+        for i, task in enumerate(tasks, 1):
+            logger.info(f"Processing task {i}/{len(tasks)}: {task.title}")
+            logger.info(f"Task details: project={task.project_name}, project_id={task.project_id}, start={task.start_time}, end={task.end_time}")
+            
             if page_id := await self.create_timesheet_entry(task):
                 created_ids.append(page_id)
+                logger.info(f"Successfully created timesheet entry for task {i}: {task.title}")
+            else:
+                logger.error(f"Failed to create timesheet entry for task {i}: {task.title}")
+        
+        logger.info(f"Created {len(created_ids)} out of {len(tasks)} timesheet entries")
         return created_ids

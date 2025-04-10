@@ -188,7 +188,7 @@ async def create_notion_agent():
     # Initialize LLM with OpenRouter
     llm = ChatOpenAI(
         temperature=0,
-        model="google/gemini-2.0-flash-001",
+        model=os.getenv("OPENROUTER_MODEL"),
         openai_api_key=os.getenv("OPENROUTER_API_KEY"),
         openai_api_base="https://openrouter.ai/api/v1",
         default_headers={
