@@ -13,29 +13,22 @@ import json
 import uuid
 import logging
 import traceback
-from datetime import datetime, timedelta
-from typing import List, Dict, Optional, TypedDict, Annotated, Any, Union
-from pydantic import BaseModel, Field
+from datetime import datetime
+from typing import List, Dict
 from dotenv import load_dotenv
-import operator
 import asyncio
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_openai import ChatOpenAI
-from langchain.prompts import ChatPromptTemplate
 from langgraph.graph import StateGraph, END, START
 from langgraph.constants import Send
 
 from notion_integration import NotionIntegration
-from models.data_models import Project, TaskWithTime, Segment
-from models.state_models import TaskExtractionState, WorkerState
+from models.data_models import TaskWithTime, Segment
 from prompts import get_coordinator_prompt, get_worker_prompt, get_aggregator_prompt
 
 load_dotenv()
 
 logger = logging.getLogger(__name__)
-
-
-
 
 class TaskAgentExtractor:
     """Extracteur de tâches basé sur LangGraph avec intégration Notion."""
@@ -168,10 +161,7 @@ class TaskAgentExtractor:
             state["current_segment_index"] = 0
             state["all_tasks"] = []  # Initialize list to collect all tasks
             
-            # Set the first segment as current
-            if segments:
-                state["segment"] = segments[0]
-            
+
             logger.info(f"Created {len(segments)} segments")
             return state
             
@@ -227,9 +217,7 @@ class TaskAgentExtractor:
             
             # Update state for next iteration
             state["current_segment_index"] = current_index + 1
-            if current_index + 1 < len(segments):
-                state["segment"] = segments[current_index + 1]
-            
+
             return state
             
         except Exception as e:
