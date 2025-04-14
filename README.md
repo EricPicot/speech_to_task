@@ -23,7 +23,7 @@ The application follows a pipeline architecture with three main stages:
    - Speech-to-text conversion using SpeechRecognition
    - Transcript storage and validation
 
-2. **Task Extraction Stage** (LangGraph Orchestration):
+2. **Task Extraction Stage** ([LangGraph Orchestration](https://langchain-ai.github.io/langgraph/tutorials/workflows/#orchestrator-worker) boosted with [Openrouter](https://openrouter.ai/) to access state of the art LLM):
    - **Coordinator Agent**: 
      - Analyzes input text and divides it into logical segments
      - Ensures each segment contains complete task information
